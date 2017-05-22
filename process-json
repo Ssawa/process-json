@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+from __future__ import print_function
+
+import json
+import argparse
+import sys
+import random
+
+from collections import defaultdict
+
+
+parser = argparse.ArgumentParser(description='Merge multiple json files into one.')
+parser.add_argument('input_files', metavar='files', type=str, nargs='+',
+                    help='Input json files to process')
+parser.add_argument('-f', '--filter', metavar='filters', dest='filters', type=str, action='append',
+                    help="JSON fields you would like filtered out, formated such as 'field.subfield.anotherfield'")
+parser.add_argument('-i', '--include', metavar='includes', dest='includes', type=str, action='append',
+                    help="JSON fields you would like included. (Will be run before filters)'")
+parser.add_argument('--out', '-o', dest='out', type=str, help='File to write the output to')
+parser.add_argument('--sample', '-s', dest='sample', type=int, help='Take a random sample of N entries')
+parser.add_argument('-p', '--pretty', dest="pretty", help="Should the file be output as pretty? (otherwise minified)",
+                    action='store_true')
+
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def filter_json(data, filters):
+
+    def do_filter(obj, fields):
+        main_field = fields[0]
+
+        if isinstance(obj, list):
+            for i, element in enumerate(obj):
+                obj[i] = do_filter(element, fields)
+
+        elif main_field in obj:
+            if len(fields) > 1:
+                obj[main_field] = do_filter(obj[main_field], fields[1:])
+            else:
+                del obj[main_field]
+
+        return obj
+
+    for i, obj in enumerate(data):
+        for f in filters:
+            data[i] = do_filter(obj, f.split('.'))
+
+    return data
+
+
+def include_json(data, includes):
+    def do_include(obj, mapping):
+        if isinstance(obj, list):
+            for i, element in enumerate(obj):
+                obj[i] = do_include(element, mapping)
+
+        else:
+            for key in list(obj.keys()):
+                if key not in mapping:
+                    del obj[key]
+                elif len(mapping[key]) > 0:
+                    obj[key] = do_include(obj[key], mapping[key])
+        return obj
+
+    # Create a mapping of our include list
+    rec_dd = lambda: defaultdict(rec_dd)
+    include_map = defaultdict(rec_dd)
+    for include in includes:
+        bucket = None
+        for field in include.split('.'):
+            if bucket is not None:
+                bucket = bucket[field]
+            else:
+                bucket = include_map[field]
+
+    for i, obj in enumerate(data):
+        data[i] = do_include(obj, include_map)
+
+    return data
+
+
+def main():
+    random.seed()
+
+    args = parser.parse_args()
+
+    if args.out:
+        out = open(args.out, 'w')
+    else:
+        out = sys.stdout
+
+    all_data = []
+    for filename in args.input_files:
+        eprint("Opening: %s" % filename)
+        with open(filename) as f:
+            eprint("Parsing JSON")
+            data = json.load(f)
+
+            if args.sample:
+                eprint("Grabbing a random sample of: %s" % args.sample)
+                if args.sample <= len(data):
+                    data = random.sample(data, args.sample)
+                else:
+                    eprint("Given sample is greater than length of data, using all the data.")
+
+            if args.includes:
+                eprint("Pulling out includes")
+                data = include_json(data, args.includes)
+
+            if args.filters:
+                eprint("Filtering")
+                data = filter_json(data, args.filters)
+
+            all_data += data
+
+    eprint("Dumping output")
+    if args.pretty:
+        json.dump(all_data, out, sort_keys=True, indent=4, separators=(',', ': '))
+    else:
+        json.dump(all_data, out)
+
+    out.write('\n')
+    out.close()
+
+if __name__ == '__main__':
+    main()
